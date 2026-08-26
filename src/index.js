@@ -30,6 +30,10 @@ const logger = pino({ level: 'warn' })
 let sock = null
 let latestQR = null
 let latestQRAt = 0
+let connected = false
+let qrShown = false        // have we emitted a QR at least once this process?
+let hadOpen = false        // have we ever fully connected?
+let preConnectFails = 0     // closes before we ever showed a QR / connected
 let connecting = false
 let reconnectTimer = null
 let recentLogouts = []
@@ -109,20 +113,33 @@ export async function startBot() {
     sock.ev.on('connection.update', (u) => {
       const { connection, lastDisconnect, qr } = u
       if (qr) {
-        latestQR = qr; latestQRAt = Date.now()
+        latestQR = qr; latestQRAt = Date.now(); qrShown = true; preConnectFails = 0
         console.log('\n📱 Scan this QR with the bot\'s WhatsApp (Settings → Linked Devices → Link a device),')
         console.log('   or open the /qr link to scan an image in your browser / dashboard.\n')
         qrcodeTerminal.generate(qr, { small: true })
       }
       if (connection === 'close') {
+        connected = false
         const code = (lastDisconnect?.error instanceof Boom) ? lastDisconnect.error.output.statusCode : 0
         if (code === DisconnectReason.loggedOut) {
           if (logoutStorm()) { console.error('🛑 Repeated logouts — ensure only ONE copy of this bot runs, then redeploy.'); return }
           console.log('🚪 Logged out / device removed. Clearing auth and re-pairing...')
-          clearAuth(); scheduleReconnect(3000)
+          clearAuth(); qrShown = false; scheduleReconnect(3000)
+        } else if (!hadOpen && !qrShown) {
+          // Stuck failing before we ever got a QR or connected — almost always
+          // stale/corrupt creds on the volume that Baileys keeps trying to
+          // resume. After a few tries, wipe them so a fresh QR is generated.
+          preConnectFails++
+          if (preConnectFails >= 3) {
+            console.log(`🩹 ${preConnectFails} failed connects with no QR — clearing stale auth to force a fresh QR...`)
+            clearAuth(); preConnectFails = 0; scheduleReconnect(2000)
+          } else {
+            console.log(`❌ Connection closed (code ${code}) before pairing [${preConnectFails}/3]. Reconnecting in 3s...`)
+            scheduleReconnect(3000)
+          }
         } else { console.log(`❌ Connection closed (code ${code}). Reconnecting in 3s...`); scheduleReconnect(3000) }
       } else if (connection === 'open') {
-        latestQR = null; recentLogouts = []
+        latestQR = null; connected = true; hadOpen = true; recentLogouts = []; preConnectFails = 0
         console.log('✅ WhatsApp connected as', sock.user?.id)
       }
     })
@@ -139,7 +156,10 @@ app.get('/', (req, res) => res.send('ok'))
 app.get('/qr', async (req, res) => {
   if (QR_TOKEN && req.query.t !== QR_TOKEN) return res.status(403).send('forbidden — append ?t=YOUR_QR_ACCESS_TOKEN')
   if (!latestQR) {
-    return res.status(200).send('<!doctype html><meta http-equiv="refresh" content="8"><body style="font-family:sans-serif;text-align:center;padding:34px"><h2>No QR right now</h2><p>The bot is already linked, or still starting. This page refreshes automatically.</p></body>')
+    const msg = connected
+      ? '<h2>✅ Already linked</h2><p>The bot is connected to WhatsApp. Nothing to scan.</p>'
+      : '<h2>Starting up…</h2><p>The bot is connecting and will show a QR here in a few seconds. This page refreshes automatically. If it never appears, check the deploy logs.</p>'
+    return res.status(200).send('<!doctype html><meta http-equiv="refresh" content="6"><body style="font-family:sans-serif;text-align:center;padding:34px">' + msg + '</body>')
   }
   try {
     const url = await QRCode.toDataURL(latestQR, { width: 320, margin: 2 })
