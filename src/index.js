@@ -1,4 +1,4 @@
-import * as baileys from 'baileys'
+import * as baileys from '@whiskeysockets/baileys'
 const makeWASocket =
   baileys.makeWASocket ||
   baileys.default?.makeWASocket ||
@@ -20,7 +20,9 @@ import path from 'path'
 import { salesReply, aiConfigured } from './ai.js'
 import { startSession, logMsg } from './supalog.js'
 
-const AUTH_DIR = process.env.AUTH_DIR || './auth'
+// On Railway the volume is mounted at /app/auth (see railway.toml); locally we
+// keep it in ./auth. AUTH_DIR env always wins if you set it.
+const AUTH_DIR = process.env.AUTH_DIR || (process.env.RAILWAY_ENVIRONMENT ? '/app/auth' : './auth')
 const PORT = process.env.PORT || 3000
 const QR_TOKEN = process.env.QR_ACCESS_TOKEN || null
 const MIN_DELAY = parseInt(process.env.MIN_REPLY_DELAY_MS || '1200', 10)

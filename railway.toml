@@ -1,0 +1,16 @@
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "npm start"
+# Express serves "ok" at / — lets Railway confirm the service booted.
+healthcheckPath = "/"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+# Persists the WhatsApp login so you scan the QR once and stay linked across
+# redeploys. The bot reads /app/auth automatically on Railway.
+[[deploy.volumes]]
+mountPath = "/app/auth"
+name = "whatsapp-auth"
