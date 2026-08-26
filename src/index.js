@@ -1,10 +1,15 @@
-import {
-  default as makeWASocket,
+import * as baileys from '@whiskeysockets/baileys'
+const makeWASocket =
+  baileys.makeWASocket ||
+  baileys.default?.makeWASocket ||
+  (typeof baileys.default === 'function' ? baileys.default : null) ||
+  (typeof baileys === 'function' ? baileys : null)
+const {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
-} from '@whiskeysockets/baileys'
+} = baileys.default && baileys.default.useMultiFileAuthState ? baileys.default : baileys
 import { Boom } from '@hapi/boom'
 import express from 'express'
 import QRCode from 'qrcode'
