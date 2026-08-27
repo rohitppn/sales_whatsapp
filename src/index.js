@@ -27,7 +27,19 @@ const PORT = process.env.PORT || 3000
 const QR_TOKEN = process.env.QR_ACCESS_TOKEN || null
 const MIN_DELAY = parseInt(process.env.MIN_REPLY_DELAY_MS || '1200', 10)
 const MAX_DELAY = parseInt(process.env.MAX_REPLY_DELAY_MS || '2600', 10)
+// Trigger gating: the bot only starts talking to someone once they send the
+// trigger phrase (the website button's prefilled message). This stops it from
+// replying to random people who message the number. Once a person is
+// activated, the bot keeps chatting with them (activation persists on the
+// volume). Set REQUIRE_TRIGGER=false to reply to everyone.
+const REQUIRE_TRIGGER = String(process.env.REQUIRE_TRIGGER || 'true').toLowerCase() !== 'false'
+const TRIGGER_TEXT = process.env.TRIGGER_TEXT || 'thebrothing'
 const logger = pino({ level: 'warn' })
+
+// Normalise for a forgiving match: lowercase, strip everything but letters/digits.
+const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+const TRIGGER_NORM = norm(TRIGGER_TEXT)
+const hasTrigger = (text) => TRIGGER_NORM !== '' && norm(text).includes(TRIGGER_NORM)
 
 let sock = null
 let latestQR = null
@@ -40,6 +52,26 @@ let connecting = false
 let reconnectTimer = null
 let recentLogouts = []
 const histories = new Map() // jid -> [{role, content}]
+
+// Who has said the trigger and is now in an active conversation. Persisted on
+// the volume so it survives redeploys.
+const ACTIVATED_FILE = path.join(AUTH_DIR, 'activated.json')
+const activated = new Set()
+function loadActivated() {
+  try {
+    if (fs.existsSync(ACTIVATED_FILE)) {
+      const arr = JSON.parse(fs.readFileSync(ACTIVATED_FILE, 'utf8'))
+      if (Array.isArray(arr)) arr.forEach((j) => activated.add(j))
+      console.log(`👥 Loaded ${activated.size} activated chat(s).`)
+    }
+  } catch (e) { console.error('loadActivated failed:', e.message) }
+}
+function saveActivated() {
+  try {
+    if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true })
+    fs.writeFileSync(ACTIVATED_FILE, JSON.stringify([...activated]))
+  } catch (e) { console.error('saveActivated failed:', e.message) }
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const randDelay = () => MIN_DELAY + Math.floor(Math.random() * Math.max(1, MAX_DELAY - MIN_DELAY))
@@ -71,7 +103,23 @@ async function handle(msg) {
   if (jid === 'status@broadcast' || jid.endsWith('@g.us') || jid.endsWith('@newsletter') || jid.endsWith('@broadcast')) return
 
   const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || ''
+
+  // ── Trigger gate ─────────────────────────────────────────────────────
+  // Only engage people who arrived via the website button (their prefilled
+  // message contains the trigger phrase). Everyone else is ignored, so the bot
+  // never messages random contacts. Once activated, we keep chatting with them.
+  let active = !REQUIRE_TRIGGER || activated.has(jid)
+  if (!active) {
+    if (hasTrigger(text)) {
+      activated.add(jid); saveActivated(); active = true
+      console.log(`✅ Activated ${phoneFromJid(jid)} (trigger matched).`)
+    } else {
+      return // not activated and no trigger → stay silent
+    }
+  }
+
   if (!text.trim()) {
+    // Activated user sent media with no caption — nudge them to type.
     if (msg.message?.imageMessage || msg.message?.audioMessage || msg.message?.documentMessage) {
       await sock.sendMessage(jid, { text: "Thanks! Best to type your question here and I'll help you right away 🙂" })
     }
@@ -171,7 +219,11 @@ app.get('/qr', async (req, res) => {
 })
 app.listen(PORT, () => {
   console.log(`🌐 HTTP on :${PORT} — open /qr to scan`)
+  console.log(REQUIRE_TRIGGER
+    ? `🔐 Trigger gate ON — only replies after someone sends "${TRIGGER_TEXT}" (the website button's prefilled message).`
+    : '🔓 Trigger gate OFF — replies to everyone.')
   if (!aiConfigured()) console.warn('⚠️  ANTHROPIC_API_KEY not set — replies will be a fallback message until you set it.')
 })
 
+loadActivated()
 startBot().catch((e) => console.error('startBot failed:', e.message))
